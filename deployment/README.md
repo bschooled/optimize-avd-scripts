@@ -45,7 +45,7 @@ When `enableEphemeralOSDisk` is set to `true`, session hosts will use ephemeral 
 ### 1. Initialize the project
 
 ```bash
-cd avd-deployment
+cd deployment
 azd auth login
 ```
 
@@ -255,6 +255,15 @@ azd down
 - [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/)
 - [AVD Start VM On Connect](https://learn.microsoft.com/azure/virtual-desktop/start-virtual-machine-connect)
 
+## Related Documentation
+
+- [AVD Insights Setup](./AVD-INSIGHTS.md) - Monitoring and diagnostics configuration
+- [Bicep Architecture](./BICEP-FIXES.md) - Module design and scoping details
+- [Image Builder](../image-builder/README.md) - Building optimized AVD images
+- [Manual Monitoring Setup](../monitoring/README.md) - DCR/DCE deployment without Bicep
+- [Troubleshooting Tools](../troubleshooting/README.md) - Session host maintenance workflows
+
 ## License
 
 This template is provided as-is under the MIT License.
+

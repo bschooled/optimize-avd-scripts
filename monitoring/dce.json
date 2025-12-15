@@ -1,0 +1,9 @@
+{
+  "location": "${LOCATION}",
+  "tags": {},
+  "properties": {
+    "networkAcls": {
+      "publicNetworkAccess": "Enabled"
+    }
+  }
+}

@@ -41,3 +41,9 @@ param tags = {
   ManagedBy: 'AZD'
   CostCenter: 'IT'
 }
+
+// AVD Insights Configuration
+param enableInsights = true
+param logAnalyticsWorkspaceName = 'avd-dev-law'
+param logAnalyticsRetentionDays = 30
+param dataCollectionRuleName = 'avd-dev-dcr'

@@ -83,11 +83,70 @@ param tags object = {
   ManagedBy: 'AZD'
 }
 
+@description('Enable AVD Insights monitoring')
+param enableInsights bool = true
+
+@description('Log Analytics workspace name for AVD Insights')
+param logAnalyticsWorkspaceName string = '${namePrefix}-${environmentName}-law'
+
+@description('Log Analytics workspace retention in days')
+@minValue(30)
+@maxValue(730)
+param logAnalyticsRetentionDays int = 30
+
+@description('Data Collection Rule name')
+param dataCollectionRuleName string = '${namePrefix}-${environmentName}-dcr'
+
 // Resource group for AVD resources
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
   location: location
   tags: tags
+}
+
+// Log Analytics Workspace for AVD Insights
+module logAnalytics 'br/public:avm/res/operational-insights/workspace:0.9.1' = if (enableInsights) {
+  scope: rg
+  name: 'logAnalytics-${namePrefix}-${environmentName}'
+  params: {
+    name: logAnalyticsWorkspaceName
+    location: location
+    dataRetention: logAnalyticsRetentionDays
+    publicNetworkAccessForIngestion: 'Enabled'
+    publicNetworkAccessForQuery: 'Enabled'
+    skuName: 'PerGB2018'
+    tags: union(tags, {
+      ResourceType: 'LogAnalytics'
+    })
+  }
+}
+
+// Data Collection Endpoint for AVD Insights (deployed as module to resource group)
+module dataCollectionEndpoint 'modules/dce.bicep' = if (enableInsights) {
+  scope: rg
+  name: 'dce-${namePrefix}-${environmentName}'
+  params: {
+    name: '${namePrefix}-${environmentName}-dce'
+    location: location
+    tags: union(tags, {
+      ResourceType: 'DataCollectionEndpoint'
+    })
+  }
+}
+
+// Data Collection Rule for AVD Insights (deployed as module to resource group)
+module dataCollectionRule 'modules/dcr.bicep' = if (enableInsights) {
+  scope: rg
+  name: 'dcr-${namePrefix}-${environmentName}'
+  params: {
+    name: dataCollectionRuleName
+    location: location
+    dataCollectionEndpointId: dataCollectionEndpoint.outputs.id
+    logAnalyticsWorkspaceId: logAnalytics.outputs.resourceId
+    tags: union(tags, {
+      ResourceType: 'DataCollectionRule'
+    })
+  }
 }
 
 // Host Pool deployment
@@ -106,6 +165,19 @@ module hostPool 'br/public:avm/res/desktop-virtualization/host-pool:0.8.1' = {
     customRdpProperty: customRdpProperty
     friendlyName: hostPoolFriendlyName
     description: hostPoolDescription
+    diagnosticSettings: enableInsights
+      ? [
+          {
+            name: 'avd-insights-hostpool'
+            workspaceResourceId: logAnalytics.outputs.resourceId
+            logCategoriesAndGroups: [
+              {
+                categoryGroup: 'allLogs'
+              }
+            ]
+          }
+        ]
+      : []
     vmTemplate: enableEphemeralOSDisk ? {
       domain: ''
       galleryImageOffer: imageReference.offer
@@ -169,6 +241,19 @@ module workspace 'br/public:avm/res/desktop-virtualization/workspace:0.9.1' = {
     applicationGroupReferences: [
       appGroup.outputs.resourceId
     ]
+    diagnosticSettings: enableInsights
+      ? [
+          {
+            name: 'avd-insights-workspace'
+            workspaceResourceId: logAnalytics.outputs.resourceId
+            logCategoriesAndGroups: [
+              {
+                categoryGroup: 'allLogs'
+              }
+            ]
+          }
+        ]
+      : []
     tags: union(tags, {
       ResourceType: 'Workspace'
     })
@@ -185,7 +270,7 @@ output hostPoolResourceId string = hostPool.outputs.resourceId
 output hostPoolName string = hostPool.outputs.name
 
 @description('The registration token for the host pool (if managementType is Standard)')
-output hostPoolRegistrationToken string = hostPool.outputs.registrationToken
+output hostPoolRegistrationToken string = hostPool.outputs.?registrationToken ?? ''
 
 @description('The resource ID of the application group')
 output applicationGroupResourceId string = appGroup.outputs.resourceId
@@ -201,3 +286,24 @@ output workspaceName string = workspace.outputs.name
 
 @description('The location of the deployed resources')
 output location string = location
+
+@description('The resource ID of the Log Analytics workspace')
+output logAnalyticsWorkspaceId string = logAnalytics.?outputs.?resourceId ?? ''
+
+@description('The name of the Log Analytics workspace')
+output logAnalyticsWorkspaceName string = logAnalytics.?outputs.?name ?? ''
+
+@description('The workspace ID (customer ID) of the Log Analytics workspace')
+output logAnalyticsWorkspaceCustomerId string = logAnalytics.?outputs.?logAnalyticsWorkspaceId ?? ''
+
+@description('The resource ID of the Data Collection Rule')
+output dataCollectionRuleId string = dataCollectionRule.?outputs.?id ?? ''
+
+@description('The name of the Data Collection Rule')
+output dataCollectionRuleName string = dataCollectionRule.?outputs.?name ?? ''
+
+@description('The resource ID of the Data Collection Endpoint')
+output dataCollectionEndpointId string = dataCollectionEndpoint.?outputs.?id ?? ''
+
+@description('AVD Insights enabled status')
+output insightsEnabled bool = enableInsights

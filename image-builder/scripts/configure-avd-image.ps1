@@ -72,9 +72,191 @@ Write-Log "Applying configurations for: $SessionType" "INFO"
 Write-Log ""
 
 # ============================================================================
-# 1. Configure RDP and Multi-Session Settings
+# 1. Detect and Repair SxS Stack Package / AVD Host Pool Health
 # ============================================================================
-Write-Log "Step 1: Configuring RDP and session settings..." "INFO"
+Write-Log "Step 1: Checking AVD host pool membership and SxS Network Stack..." "INFO"
+
+# Check if this node is registered to an AVD host pool
+$isHostPoolMember = $false
+$hostPoolInfo = $null
+$needsReregistration = $false
+
+try {
+    # Check for AVD Agent registry key to determine host pool membership
+    $avdAgentKey = 'HKLM:\SOFTWARE\Microsoft\RDInfraAgent'
+    if (Test-Path $avdAgentKey) {
+        $isHostPoolMember = $true
+        Write-Log "  Node is registered to an AVD host pool" "INFO"
+        
+        # Get host pool information from registry
+        try {
+            $hostPoolInfo = @{
+                IsRegistered = (Get-ItemProperty -Path $avdAgentKey -Name 'IsRegistered' -ErrorAction SilentlyContinue).IsRegistered
+                RegistrationToken = (Get-ItemProperty -Path $avdAgentKey -Name 'RegistrationToken' -ErrorAction SilentlyContinue).RegistrationToken
+            }
+            
+            # Check health status via RDAgent service
+            $rdAgentService = Get-Service -Name 'RDAgentBootLoader' -ErrorAction SilentlyContinue
+            if ($null -eq $rdAgentService) {
+                Write-Log "  RDAgentBootLoader service not found - host is unhealthy" "WARN"
+                $needsReregistration = $true
+            } elseif ($rdAgentService.Status -ne 'Running') {
+                Write-Log "  RDAgentBootLoader service is $($rdAgentService.Status) - host is unhealthy" "WARN"
+                $needsReregistration = $true
+            } else {
+                # Check if agent can communicate with AVD service
+                $rdAgentLog = "C:\Program Files\Microsoft RDInfra\AgentInstall.txt"
+                if (Test-Path $rdAgentLog) {
+                    $recentErrors = Select-String -Path $rdAgentLog -Pattern "ERROR|FAIL" -SimpleMatch -ErrorAction SilentlyContinue | Select-Object -Last 5
+                    if ($recentErrors) {
+                        Write-Log "  Recent errors found in AVD Agent logs - host may be unhealthy" "WARN"
+                        $needsReregistration = $true
+                    }
+                }
+            }
+        } catch {
+            Write-Log "  Error checking host pool health: $($_.Exception.Message)" "WARN"
+            $needsReregistration = $true
+        }
+    } else {
+        Write-Log "  Node is not registered to an AVD host pool" "INFO"
+    }
+} catch {
+    Write-Log "  Error checking AVD host pool membership: $($_.Exception.Message)" "WARN"
+}
+
+# If host is unhealthy, remove and prepare for re-registration
+if ($isHostPoolMember -and $needsReregistration) {
+    Write-Log "  Host is unhealthy - initiating removal and re-registration process" "WARN"
+    
+    try {
+        # Step 1: Uninstall AVD Agent components
+        Write-Log "  Step 1.1: Removing AVD Agent Boot Loader..." "INFO"
+        $bootLoader = Get-WmiObject -Class Win32_Product | Where-Object { $_.Name -like "*Remote Desktop Agent Boot Loader*" }
+        if ($bootLoader) {
+            $bootLoader.Uninstall() | Out-Null
+            Write-Log "  AVD Agent Boot Loader uninstalled" "INFO"
+        }
+        
+        Write-Log "  Step 1.2: Removing AVD Agent..." "INFO"
+        $agent = Get-WmiObject -Class Win32_Product | Where-Object { $_.Name -like "*Remote Desktop Services Infrastructure Agent*" }
+        if ($agent) {
+            $agent.Uninstall() | Out-Null
+            Write-Log "  AVD Agent uninstalled" "INFO"
+        }
+        
+        # Step 2: Clean up registry keys
+        Write-Log "  Step 1.3: Cleaning registry keys..." "INFO"
+        Remove-Item -Path 'HKLM:\SOFTWARE\Microsoft\RDInfraAgent' -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path 'HKLM:\SOFTWARE\Microsoft\RDMonitoringAgent' -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Log "  Registry cleaned" "INFO"
+        
+        # Step 3: Remove SxS package if present
+        Write-Log "  Step 1.4: Removing SxS Network Stack package..." "INFO"
+        Uninstall-Package -Name "Remote Desktop Services SxS Network Stack" -AllVersions -Force -ErrorAction SilentlyContinue
+        Write-Log "  SxS package removed" "INFO"
+        
+        Write-Log "  Host successfully removed from AVD - ready for re-registration" "INFO"
+        Write-Log "  NOTE: Use Azure CLI or Portal to remove session host from host pool if still listed" "WARN"
+        Write-Log "  Command: az desktopvirtualization sessionhost delete --host-pool-name <pool> --name <host> --resource-group <rg>" "INFO"
+        
+    } catch {
+        Write-Log "  ERROR during AVD removal: $($_.Exception.Message)" "ERROR"
+    }
+}
+
+# Check SxS package status
+try {
+    $sxsPackage = Get-Package -Name "Remote Desktop Services SxS Network Stack" -ErrorAction SilentlyContinue
+    
+    if ($null -eq $sxsPackage) {
+        Write-Log "  SxS package not found - will be installed with AVD agent" "INFO"
+    } else {
+        Write-Log "  SxS package found: $($sxsPackage.Name) v$($sxsPackage.Version)" "INFO"
+        
+        # Check if package is broken by verifying registry keys
+        $sxsRegPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\RDMS'
+        $isBroken = $false
+        
+        if (Test-Path $sxsRegPath) {
+            try {
+                $rdmsService = Get-Service -Name 'RDMS' -ErrorAction SilentlyContinue
+                if ($null -eq $rdmsService) {
+                    Write-Log "  RDMS service not found - SxS package may be broken" "WARN"
+                    $isBroken = $true
+                }
+            } catch {
+                Write-Log "  Error checking RDMS service: $($_.Exception.Message)" "WARN"
+                $isBroken = $true
+            }
+        } else {
+            Write-Log "  SxS registry path missing - package is broken" "WARN"
+            $isBroken = $true
+        }
+        
+        if ($isBroken) {
+            Write-Log "  SxS package is broken - removing for reinstallation" "WARN"
+            try {
+                Uninstall-Package -Name "Remote Desktop Services SxS Network Stack" -AllVersions -Force -ErrorAction Stop
+                Write-Log "  Successfully uninstalled broken SxS package" "INFO"
+            } catch {
+                Write-Log "  ERROR uninstalling SxS: $($_.Exception.Message)" "ERROR"
+            }
+        } else {
+            Write-Log "  SxS package is healthy" "INFO"
+        }
+    }
+} catch {
+    Write-Log "  ERROR checking SxS package: $($_.Exception.Message)" "WARN"
+}
+
+# Download latest AVD installers
+Write-Log "  Downloading latest AVD installers..." "INFO"
+try {
+    $agentPath = "C:\Windows\Temp\RDAgent.msi"
+    $bootloaderPath = "C:\Windows\Temp\RDBootloader.msi"
+    
+    Write-Log "  Downloading AVD Agent..." "INFO"
+    Invoke-WebRequest -Uri "https://query.prod.cms.rt.microsoft.com/cms/api/am/binary/RWrmXv" -OutFile $agentPath -UseBasicParsing
+    Write-Log "  AVD Agent downloaded to $agentPath" "INFO"
+    
+    Write-Log "  Downloading AVD Boot Loader..." "INFO"
+    Invoke-WebRequest -Uri "https://query.prod.cms.rt.microsoft.com/cms/api/am/binary/RWrxrH" -OutFile $bootloaderPath -UseBasicParsing
+    Write-Log "  AVD Boot Loader downloaded to $bootloaderPath" "INFO"
+    
+    if ($needsReregistration) {
+        Write-Log "" "INFO"
+        Write-Log "  ============================================" "WARN"
+        Write-Log "  RE-REGISTRATION REQUIRED" "WARN"
+        Write-Log "  ============================================" "WARN"
+        Write-Log "  This host was removed from the AVD host pool." "WARN"
+        Write-Log "" "INFO"
+        Write-Log "  To re-register, obtain a registration token and run:" "INFO"
+        Write-Log "  1. Get registration token from Azure Portal or CLI:" "INFO"
+        Write-Log "     az desktopvirtualization hostpool update --name <pool> --resource-group <rg> --registration-info expiration-time='<future-date>' registration-token-operation='Update'" "INFO"
+        Write-Log "" "INFO"
+        Write-Log "  2. Install AVD Agent with token:" "INFO"
+        Write-Log "     msiexec /i C:\Windows\Temp\RDAgent.msi REGISTRATIONTOKEN=<token> /qn /norestart" "INFO"
+        Write-Log "" "INFO"
+        Write-Log "  3. Install Boot Loader:" "INFO"
+        Write-Log "     msiexec /i C:\Windows\Temp\RDBootloader.msi /qn /norestart" "INFO"
+        Write-Log "  ============================================" "WARN"
+        Write-Log "" "INFO"
+    } else {
+        Write-Log "  AVD installers ready at C:\Windows\Temp\" "INFO"
+        Write-Log "  NOTE: Installation requires REGISTRATIONTOKEN during host pool join" "INFO"
+    }
+    
+} catch {
+    Write-Log "  ERROR downloading AVD installers: $($_.Exception.Message)" "ERROR"
+    Write-Log "  Continuing with configuration" "WARN"
+}
+
+# ============================================================================
+# 2. Configure RDP and Multi-Session Settings
+# ============================================================================
+Write-Log ""
+Write-Log "Step 2: Configuring RDP and session settings..." "INFO"
 
 try {
     $tsKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
@@ -107,10 +289,10 @@ try {
 }
 
 # ============================================================================
-# 2. Disable First Logon Animation (improves user experience)
+# 3. Disable First Logon Animation (improves user experience)
 # ============================================================================
 Write-Log ""
-Write-Log "Step 2: Disabling first logon animation..." "INFO"
+Write-Log "Step 3: Disabling first logon animation..." "INFO"
 
 try {
     $policyKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
@@ -124,10 +306,10 @@ try {
 }
 
 # ============================================================================
-# 3. Configure Time Zone Redirection
+# 4. Configure Time Zone Redirection
 # ============================================================================
 Write-Log ""
-Write-Log "Step 3: Enabling time zone redirection..." "INFO"
+Write-Log "Step 4: Enabling time zone redirection..." "INFO"
 
 try {
     $tzKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
@@ -141,10 +323,10 @@ try {
 }
 
 # ============================================================================
-# 4. Configure Windows Update for AVD
+# 5. Configure Windows Update for AVD
 # ============================================================================
 Write-Log ""
-Write-Log "Step 4: Configuring Windows Update settings..." "INFO"
+Write-Log "Step 5: Configuring Windows Update settings..." "INFO"
 
 try {
     $wuKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
@@ -162,10 +344,10 @@ try {
 }
 
 # ============================================================================
-# 5. Disable Storage Sense (can interfere with profile management)
+# 6. Disable Storage Sense (can interfere with profile management)
 # ============================================================================
 Write-Log ""
-Write-Log "Step 5: Disabling Storage Sense..." "INFO"
+Write-Log "Step 6: Disabling Storage Sense..." "INFO"
 
 try {
     $ssKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\StorageSense'
@@ -179,10 +361,10 @@ try {
 }
 
 # ============================================================================
-# 6. Configure Power Settings (prevent sleep/hibernate)
+# 7. Configure Power Settings (prevent sleep/hibernate)
 # ============================================================================
 Write-Log ""
-Write-Log "Step 6: Configuring power settings..." "INFO"
+Write-Log "Step 7: Configuring power settings..." "INFO"
 
 try {
     # Set power plan to High Performance
@@ -206,10 +388,10 @@ try {
 }
 
 # ============================================================================
-# 7. Configure FSLogix (if installed)
+# 8. Configure FSLogix (if installed)
 # ============================================================================
 Write-Log ""
-Write-Log "Step 7: Configuring FSLogix..." "INFO"
+Write-Log "Step 8: Configuring FSLogix..." "INFO"
 
 $fslogixInstalled = Get-Service -Name 'frxsvc' -ErrorAction SilentlyContinue
 
@@ -255,10 +437,10 @@ if ($fslogixInstalled) {
 }
 
 # ============================================================================
-# 8. Configure Windows Defender Exclusions for AVD/FSLogix
+# 9. Configure Windows Defender Exclusions for AVD/FSLogix
 # ============================================================================
 Write-Log ""
-Write-Log "Step 8: Configuring Windows Defender exclusions..." "INFO"
+Write-Log "Step 9: Configuring Windows Defender exclusions..." "INFO"
 
 try {
     # FSLogix exclusions (if FSLogix is installed)
@@ -285,10 +467,10 @@ try {
 }
 
 # ============================================================================
-# 9. Optimize for Virtual Desktop Experience
+# 10. Optimize for Virtual Desktop Experience
 # ============================================================================
 Write-Log ""
-Write-Log "Step 9: Optimizing for virtual desktop experience..." "INFO"
+Write-Log "Step 10: Optimizing for virtual desktop experience..." "INFO"
 
 try {
     # Disable background defragmentation (handled by Azure)
@@ -314,10 +496,10 @@ try {
 }
 
 # ============================================================================
-# 10. Configure Network Settings
+# 11. Configure Network Settings
 # ============================================================================
 Write-Log ""
-Write-Log "Step 10: Configuring network settings..." "INFO"
+Write-Log "Step 11: Configuring network settings..." "INFO"
 
 try {
     # Enable Network Discovery
@@ -336,10 +518,10 @@ try {
 }
 
 # ============================================================================
-# 11. Configure Firewall for AVD
+# 12. Configure Firewall for AVD
 # ============================================================================
 Write-Log ""
-Write-Log "Step 11: Configuring Windows Firewall..." "INFO"
+Write-Log "Step 12: Configuring Windows Firewall..." "INFO"
 
 try {
     # Ensure RDP is allowed
@@ -352,10 +534,10 @@ try {
 }
 
 # ============================================================================
-# 12. Set Registry Keys for AVD Optimization
+# 13. Set Registry Keys for AVD Optimization
 # ============================================================================
 Write-Log ""
-Write-Log "Step 12: Applying additional AVD optimizations..." "INFO"
+Write-Log "Step 13: Applying additional AVD optimizations..." "INFO"
 
 try {
     # Disable automatic maintenance

@@ -39,10 +39,10 @@ ensure_arg() {
 }
 
 image_name="win11-25h2-ent-compact"
-gallery_name="Ctechcomputegallery"
+gallery_name=""
 resource_group="avd-image-builder-rg"
-location="westus"
-script_path="./compact-avd.ps1"
+location=""
+script_path="$(dirname "${BASH_SOURCE[0]}")/scripts/compact-avd.ps1"
 image_definition="win11-25h2-ent-compact"
 image_version="1.0.0"
 vm_size="Standard_D4s_v5"
@@ -366,15 +366,16 @@ fi
 # Inline the PowerShell customizers to avoid storage/SAS entirely
 script_b64=$(base64 -w0 "$script_path")
 
-# AVD configuration script
-avd_config_path="$(dirname "$script_path")/configure-avd-image.ps1"
+# AVD configuration script (always in scripts/ folder alongside compact-avd.ps1)
+SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
+avd_config_path="$SCRIPT_DIR/scripts/configure-avd-image.ps1"
 avd_config_b64=""
 if [[ -f "$avd_config_path" ]]; then
 	avd_config_b64=$(base64 -w0 "$avd_config_path")
 fi
 
 # Disk shrinking script
-shrink_script_path="$(dirname "$script_path")/shrink-os-disk.ps1"
+shrink_script_path="$SCRIPT_DIR/scripts/shrink-os-disk.ps1"
 shrink_script_b64=""
 if [[ -n "$disk_size_gb" && -f "$shrink_script_path" ]]; then
 	shrink_script_b64=$(base64 -w0 "$shrink_script_path")
