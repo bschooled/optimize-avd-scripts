@@ -38,14 +38,67 @@ $mmSettings = [ordered]@{
     PageCombining                = $true
 }
 
-if ($mmSettings.ApplicationLaunchPrefetching) { Enable-MMAgent -ApplicationLaunchPrefetching }
-if ($mmSettings.ApplicationPreLaunch)         { Enable-MMAgent -ApplicationPreLaunch }
-if ($mmSettings.MemoryCompression)            { Enable-MMAgent -MemoryCompression }
-if ($mmSettings.OperationAPI)                 { Enable-MMAgent -OperationAPI }
-if ($mmSettings.PageCombining)                { Enable-MMAgent -PageCombining }
-if ($mmSettings.MaxOperationAPIFiles)         { Set-MMAgent -MaxOperationAPIFiles $mmSettings.MaxOperationAPIFiles }
+# MMAgent cmdlets may not be supported on all editions/configurations
+# Wrap in try-catch to prevent script failure
+try {
+    if ($mmSettings.ApplicationLaunchPrefetching) { 
+        Enable-MMAgent -ApplicationLaunchPrefetching -ErrorAction Stop 
+        Write-Host "  Enabled ApplicationLaunchPrefetching" -ForegroundColor Gray
+    }
+} catch { 
+    Write-Host "  ApplicationLaunchPrefetching not supported: $($_.Exception.Message)" -ForegroundColor Yellow 
+}
 
-Write-Host "Final MMAgent state:" -ForegroundColor Green
-Get-MMAgent | Format-List
+try {
+    if ($mmSettings.ApplicationPreLaunch) { 
+        Enable-MMAgent -ApplicationPreLaunch -ErrorAction Stop 
+        Write-Host "  Enabled ApplicationPreLaunch" -ForegroundColor Gray
+    }
+} catch { 
+    Write-Host "  ApplicationPreLaunch not supported: $($_.Exception.Message)" -ForegroundColor Yellow 
+}
+
+try {
+    if ($mmSettings.MemoryCompression) { 
+        Enable-MMAgent -MemoryCompression -ErrorAction Stop 
+        Write-Host "  Enabled MemoryCompression" -ForegroundColor Gray
+    }
+} catch { 
+    Write-Host "  MemoryCompression not supported: $($_.Exception.Message)" -ForegroundColor Yellow 
+}
+
+try {
+    if ($mmSettings.OperationAPI) { 
+        Enable-MMAgent -OperationAPI -ErrorAction Stop 
+        Write-Host "  Enabled OperationAPI" -ForegroundColor Gray
+    }
+} catch { 
+    Write-Host "  OperationAPI not supported: $($_.Exception.Message)" -ForegroundColor Yellow 
+}
+
+try {
+    if ($mmSettings.PageCombining) { 
+        Enable-MMAgent -PageCombining -ErrorAction Stop 
+        Write-Host "  Enabled PageCombining" -ForegroundColor Gray
+    }
+} catch { 
+    Write-Host "  PageCombining not supported: $($_.Exception.Message)" -ForegroundColor Yellow 
+}
+
+try {
+    if ($mmSettings.MaxOperationAPIFiles) { 
+        Set-MMAgent -MaxOperationAPIFiles $mmSettings.MaxOperationAPIFiles -ErrorAction Stop 
+        Write-Host "  Set MaxOperationAPIFiles to $($mmSettings.MaxOperationAPIFiles)" -ForegroundColor Gray
+    }
+} catch { 
+    Write-Host "  MaxOperationAPIFiles not supported: $($_.Exception.Message)" -ForegroundColor Yellow 
+}
+
+try {
+    Write-Host "Final MMAgent state:" -ForegroundColor Green
+    Get-MMAgent | Format-List
+} catch {
+    Write-Host "Could not retrieve MMAgent state (not supported on this system)" -ForegroundColor Yellow
+}
 
 Write-Host "Compact image customization complete." -ForegroundColor Green
