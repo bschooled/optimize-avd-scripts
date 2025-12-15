@@ -1,0 +1,24 @@
+# .gitignore for Azure Developer CLI and Bicep
+
+# Azure Developer CLI
+.azure/
+*.env
+
+# Bicep build outputs
+*.json
+!**/main.json
+!**/azuredeploy.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
